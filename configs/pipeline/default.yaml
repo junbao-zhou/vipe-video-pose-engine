@@ -28,6 +28,7 @@ slam:
 # Post-processing configs
 post:
   depth_align_model: "adaptive_unidepth-l_svda"
+  fmde_dir: null  # Path to Depth Anything checkpoint directory (optional)
 
 # Output configs
 output:

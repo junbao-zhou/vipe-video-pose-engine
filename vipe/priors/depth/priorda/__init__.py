@@ -28,9 +28,9 @@ class PriorDAModel(DepthEstimationModel):
     https://github.com/SpatialVision/Prior-Depth-Anything
     """
 
-    def __init__(self) -> None:
+    def __init__(self, fmde_dir: str = None) -> None:
         super().__init__()
-        self.model = PriorDepthAnything(device="cuda")
+        self.model = PriorDepthAnything(device="cuda", fmde_dir=fmde_dir)
 
     @property
     def depth_type(self) -> DepthType:

@@ -154,6 +154,7 @@ class AdaptiveDepthProcessor(StreamProcessor):
         view_idx: int = 0,
         model: str = "adaptive_unidepth-l_svda",
         share_depth_model: bool = False,
+        fmde_dir: str = None,
     ):
         super().__init__()
         self.slam_output = slam_output
@@ -176,7 +177,7 @@ class AdaptiveDepthProcessor(StreamProcessor):
         assert prefix == "adaptive", "Model name should start with 'adaptive_'"
 
         self.depth_model = make_depth_model(metric_model)
-        self.prompt_model = PriorDAModel()
+        self.prompt_model = PriorDAModel(fmde_dir=fmde_dir)
         self.update_momentum = 0.99
 
     def __call__(self, frame_idx: int, frame: VideoFrame) -> VideoFrame:
