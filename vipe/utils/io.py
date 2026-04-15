@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import tempfile
 import zipfile
@@ -27,11 +28,13 @@ import Imath
 import numpy as np
 import OpenEXR
 import torch
+from PIL import Image
 
 from vipe.ext.lietorch import SE3
 from vipe.streams.base import FrameAttribute, VideoFrame, VideoStream
 from vipe.utils.cameras import CameraType
 from vipe.utils.geometry import se3_matrix_to_se3
+from vipe.utils.palette import _palette
 from vipe.utils.visualization import VideoWriter
 
 
@@ -48,16 +51,32 @@ class ArtifactPath:
         return self.base_path / "rgb" / f"{self.artifact_name}.mp4"
 
     @property
+    def rgb_images_dir(self) -> Path:
+        return self.base_path / "rgb" / "images"
+
+    @property
     def pose_path(self) -> Path:
         return self.base_path / "pose" / f"{self.artifact_name}.npz"
+
+    @property
+    def pose_json_path(self) -> Path:
+        return self.base_path / "pose" / f"{self.artifact_name}.json"
 
     @property
     def depth_path(self) -> Path:
         return self.base_path / "depth" / f"{self.artifact_name}.zip"
 
     @property
+    def depth_images_dir(self) -> Path:
+        return self.base_path / "depth" / "images"
+
+    @property
     def intrinsics_path(self) -> Path:
         return self.base_path / "intrinsics" / f"{self.artifact_name}.npz"
+
+    @property
+    def intrinsics_json_path(self) -> Path:
+        return self.base_path / "intrinsics" / f"{self.artifact_name}.json"
 
     @property
     def camera_type_path(self) -> Path:
@@ -70,6 +89,10 @@ class ArtifactPath:
     @property
     def mask_path(self) -> Path:
         return self.base_path / "mask" / f"{self.artifact_name}.zip"
+
+    @property
+    def mask_images_dir(self) -> Path:
+        return self.base_path / "mask" / "images"
 
     @property
     def mask_phrase_path(self) -> Path:
@@ -150,9 +173,11 @@ def save_pose_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream
     if gt:
         pose_list = cached_final_stream.get_gt_stream_attribute(FrameAttribute.POSE)
         path = out_path.eval_gt_pose_path
+        json_path = None
     else:
         pose_list = cached_final_stream.get_stream_attribute(FrameAttribute.POSE)
         path = out_path.pose_path
+        json_path = out_path.pose_json_path
 
     pose_list = [
         (frame_idx, pose_data.matrix().cpu().numpy())
@@ -164,6 +189,15 @@ def save_pose_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream
         pose_inds = np.array([frame_idx for frame_idx, _ in pose_list])
         path.parent.mkdir(exist_ok=True, parents=True)
         np.savez(path, data=pose_data, inds=pose_inds)
+
+        # Also save as JSON
+        if json_path is not None:
+            json_data = {
+                "data": pose_data.tolist(),
+                "inds": pose_inds.tolist()
+            }
+            with json_path.open("w", encoding="utf-8") as f:
+                json.dump(json_data, f, ensure_ascii=False, indent=2)
 
 
 def read_pose_artifacts(npz_file_path: Path) -> tuple[np.ndarray, SE3]:
@@ -189,11 +223,13 @@ def save_intrinsics_artifacts(out_path: ArtifactPath, cached_final_stream: Video
         camera_type_list = cached_final_stream.get_gt_stream_attribute(FrameAttribute.CAMERA_TYPE)
         intr_path = out_path.eval_gt_intrinsics_path
         camera_type_path = out_path.eval_gt_camera_type_path
+        json_path = None
     else:
         intrinsics_list = cached_final_stream.get_stream_attribute(FrameAttribute.INTRINSICS)
         camera_type_list = cached_final_stream.get_stream_attribute(FrameAttribute.CAMERA_TYPE)
         intr_path = out_path.intrinsics_path
         camera_type_path = out_path.camera_type_path
+        json_path = out_path.intrinsics_json_path
 
     intrinsics_list = [
         (frame_idx, intr_data.cpu().numpy())
@@ -205,6 +241,15 @@ def save_intrinsics_artifacts(out_path: ArtifactPath, cached_final_stream: Video
         intrinsics_inds = np.array([frame_idx for frame_idx, _ in intrinsics_list])
         intr_path.parent.mkdir(exist_ok=True, parents=True)
         np.savez(intr_path, data=intrinsics_data, inds=intrinsics_inds)
+
+        # Also save as JSON
+        if json_path is not None:
+            json_data = {
+                "data": intrinsics_data.tolist(),
+                "inds": intrinsics_inds.tolist()
+            }
+            with json_path.open("w", encoding="utf-8") as f:
+                json.dump(json_data, f, ensure_ascii=False, indent=2)
 
     camera_type_list = [
         (frame_idx, camera_type_data)
@@ -240,6 +285,14 @@ def save_rgb_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream)
         for frame_data in cached_final_stream:
             rgb_writer.write((frame_data.rgb.cpu().numpy() * 255).astype(np.uint8))
 
+    # Also save as individual PNG images
+    rgb_images_dir = out_path.rgb_images_dir
+    rgb_images_dir.mkdir(exist_ok=True, parents=True)
+    for frame_idx, frame_data in enumerate(cached_final_stream):
+        rgb_image = (frame_data.rgb.cpu().numpy() * 255).astype(np.uint8)
+        rgb_path = rgb_images_dir / f"{frame_idx:05d}.png"
+        cv2.imwrite(str(rgb_path), cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+
 
 def read_rgb_artifacts(rgb_file_path: Path) -> Iterator[tuple[int, torch.Tensor]]:
     """
@@ -256,9 +309,11 @@ def save_depth_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStrea
     if gt:
         metric_depth_list = cached_final_stream.get_gt_stream_attribute(FrameAttribute.METRIC_DEPTH)
         path = out_path.eval_gt_depth_path
+        images_dir = None
     else:
         metric_depth_list = cached_final_stream.get_stream_attribute(FrameAttribute.METRIC_DEPTH)
         path = out_path.depth_path
+        images_dir = out_path.depth_images_dir
 
     metric_depth_list = [
         (frame_idx, depth_data.cpu().numpy())
@@ -277,6 +332,18 @@ def save_depth_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStrea
                     exr.writePixels({"Z": metric_depth.astype(np.float16).tobytes()})
                     exr.close()
                     z.write(f.name, f"{frame_idx:05d}.exr")
+
+        # Also save as individual EXR images
+        if images_dir is not None:
+            images_dir.mkdir(exist_ok=True, parents=True)
+            for frame_idx, metric_depth in metric_depth_list:
+                height, width = metric_depth.shape
+                header = OpenEXR.Header(width, height)
+                header["channels"] = {"Z": Imath.Channel(Imath.PixelType(Imath.PixelType.HALF))}
+                exr_path = images_dir / f"{frame_idx:05d}.exr"
+                exr = OpenEXR.OutputFile(str(exr_path), header)
+                exr.writePixels({"Z": metric_depth.astype(np.float16).tobytes()})
+                exr.close()
 
 
 def read_depth_artifacts(zip_file_path: Path) -> Iterator[tuple[int, torch.Tensor]]:
@@ -368,6 +435,19 @@ def save_artifacts(out_path: ArtifactPath, cached_final_stream: VideoStream) -> 
             for frame_idx, instance in instance_list:
                 _, mask_buffer = cv2.imencode(".png", instance.cpu().numpy().astype(np.uint8))
                 z.writestr(f"{frame_idx:05d}.png", mask_buffer.tobytes())
+
+        # Also save as individual PNG images with palette
+        mask_images_dir = out_path.mask_images_dir
+        mask_images_dir.mkdir(exist_ok=True, parents=True)
+        for frame_idx, instance in instance_list:
+            mask_image = instance.cpu().numpy().astype(np.uint8)
+            mask_path = mask_images_dir / f"{frame_idx:05d}.png"
+            # Use PIL to save with palette
+            pil_image = Image.fromarray(mask_image, mode="P")
+            # Flatten palette list for PIL (expects flat list of RGB values)
+            flat_palette = [val for rgb in _palette for val in rgb]
+            pil_image.putpalette(flat_palette)
+            pil_image.save(str(mask_path))
 
     # Save Instance phrases as txt file.
     instance_phrases_combined = {}
